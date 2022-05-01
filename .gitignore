@@ -1,3 +1,3 @@
-/build
-/.vscode
-.DS_Store
+/da65ify.exe
+/da65ify
+/*.o

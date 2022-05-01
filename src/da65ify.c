@@ -167,11 +167,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Could not check CDL file size - %s\n", strerror(errno));
         return -2;
     }
-    if (cdlfilestat.st_size != romfilestat.st_size - 0x10) {
+    if (cdlfilestat.st_size < romfilestat.st_size - 0x10) {
         close(cdlfile);
         close(romfile);
-        fprintf(stderr, "CDL file size did not match ROM file\n");
+        fprintf(stderr, "CDL file is smaller than ROM\n");
         return -2;
+    }
+    if (cdlfilestat.st_size != romfilestat.st_size - 0x10) {
+        fprintf(stderr, "Warn: CDL file does not match ROM size, that might be bad\n");
     }
 
     FILE *romf = fdopen(romfile, "r");
