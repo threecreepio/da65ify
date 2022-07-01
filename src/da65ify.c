@@ -5,11 +5,16 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #ifndef O_BINARY
 #define O_BINARY 0
 #endif
 
+char bankdata[0x8000];
+int bankstartaddr[0x100];
 
 int showHelp(const char *error) {
     if (error != 0) {
@@ -23,6 +28,7 @@ int showHelp(const char *error) {
 \n  <file.nes>              Filename of the ROM file to load\
 \n  <file.cdl>              Filename of the CDL file to load\
 \n  --banksize <number>     Size of PRG banks, 8=32kb, 4=16kb (default), 2=8kb\
+\n  --mlb <path.mlb>        Mesen MLB label file to load\
 \n\
 \nWhen the program finishes it will create a \"Makefile\" and several \".infofile\"s\
 \n'make disassembly' will run the disassembly with da65\
@@ -47,10 +53,75 @@ int reportCDL(FILE *out, int start, int end, int cdl) {
     return 0;
 }
 
+struct label {
+    uint8_t type;
+    uint32_t addr;
+    char *label;
+};
 
-char bankdata[0x8000];
-int bankstartaddr[0x100];
+struct label *labels = 0;
+size_t labelcount = 0;
 
+int parseMLBFile(char *path) {
+    FILE *file = fopen(path, "r");
+    if (file == 0) return 1;
+    char *line = NULL;
+    size_t len = 0;
+
+    labelcount = 0;
+    size_t maxlabel = 0x4000;
+    labels = malloc(sizeof(struct label) * maxlabel);
+
+    while (1) {
+        // read next line
+        int linelen = getdelim(&line, &len, '\n', file);
+        if (linelen <= 3) break;
+        line[linelen - 1] = 0; // null terminate line
+        char *rest = line;
+
+        // make sure we skip any UTF-8 BOMs
+        if (labelcount == 0 && ((uint8_t)rest[0]) == 0xEF && ((uint8_t)rest[1]) == 0xBB && ((uint8_t)rest[2]) == 0xBF) {
+            rest += 3;
+        }
+        
+        char *type = strsep(&rest, ":"); // read label type
+        char *addr = strsep(&rest, ":"); // read label rom offset
+        char *label = strsep(&rest, ":"); // read label name
+        strsep(&rest, ":"); // read comment
+
+        // skip ahead this line had no label
+        int labellen = strnlen(label, linelen);
+        if (labellen <= 0) continue;
+
+        // check if label list needs expanding
+        if (labelcount >= maxlabel) {
+            // yes, create new list with doubled size
+            struct label *newlabels = malloc(sizeof(struct label) * (maxlabel * 2));
+            // exit if we could not allocate
+            if (newlabels == 0) return 2;
+            // copy over previous labels
+            memcpy(newlabels, labels, sizeof(struct label) * maxlabel);
+            // and free old list
+            free(labels);
+            // then update to our new label list
+            maxlabel *= 2;
+            labels = newlabels;
+        }
+
+        // add new label
+        char *labelstr = malloc(labellen + 1);
+        if (labelstr == 0) return 3;
+        strncpy(labelstr, label, labellen + 1);
+        labels[labelcount].type = type[0];
+        labels[labelcount].label = labelstr;
+        labels[labelcount].addr = (int)strtol(addr, NULL, 16);
+        labelcount += 1;
+    }
+
+    // we've parsed the file, clear memory and exit
+    free(line);
+    return 0;
+}
 
 int writeBankInfo(const char *romfilepath, FILE *romfile, FILE *cdlfile, int banksize, int bank) {
     char bankfilename[0x40];
@@ -66,11 +137,16 @@ int writeBankInfo(const char *romfilepath, FILE *romfile, FILE *cdlfile, int ban
     for (int i=0; i<banksize * 0x1000; ++i) {
         int cdl = fgetc(cdlfile);
         bankdata[i] = cdl;
-        if (cdl & 0b1100 && foundstartaddr == 0) {
+        if (cdl != 0 && foundstartaddr == 0) {
             foundstartaddr = 1;
             int newbank = (cdl >> 2) & 0b11;
-            startaddr = 0x8000 + ((newbank - 1) * 0x2000);
+            startaddr = 0x8000 + (newbank * 0x2000);
+            fprintf(stderr, "bank #%i is mapped to %04x in CDL\n", bank, startaddr);
         }
+    }
+
+    if (foundstartaddr == 0) {
+        fprintf(stderr, "bank #%i is mapped to %04x\n", bank, startaddr);
     }
 
     if (startaddr + banksize * 0x1000 - 1 > 0xffff) {
@@ -91,6 +167,31 @@ GLOBAL { \
 \n  LABELBREAK $1; \
 \n};", romfilepath, bank, (banksize * bank * 0x1000) + 0x10, banksize * 0x1000, startaddr);
 
+    // check if an mlb file is in use
+    if (labelcount > 0) {
+        // if so, find start and end extents of our bank in prg rom
+        int start = (banksize * bank * 0x1000);
+        int end = (banksize * (bank + 1) * 0x1000);
+        // then check every label
+        for (size_t i=0; i < labelcount; ++i) {
+            // always write ram labels
+            if (labels[i].type == 'R') {
+                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; };", labels[i].addr, labels[i].label);
+                continue;
+            }
+
+            // on prg rom labels
+            if (labels[i].type == 'P') {
+                // check so the label belongs to our bank
+                if (labels[i].addr < start) continue;
+                if (labels[i].addr >= end) continue;
+                // and if so, print it.
+                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; };", startaddr + (labels[i].addr - start), labels[i].label);
+                continue;
+            }
+        }
+    }
+
     int cdl = bankdata[0];
     int istart = 0;
     for (int i=1; i<banksize * 0x1000; ++i) {
@@ -109,6 +210,7 @@ GLOBAL { \
 int main(int argc, char **argv) {
     char *romfilepath = 0;
     char *cdlfilepath = 0;
+    char *mlbfilepath = 0;
     struct stat romfilestat;
     struct stat cdlfilestat;
     int banksize = 4;
@@ -128,6 +230,9 @@ int main(int argc, char **argv) {
                 i += 1;
             } else if (0 == strcmp("--banksize", argv[i])) {
                 banksize = atoi(argv[i + 1]);
+                i += 1;
+            } else if (0 == strcmp("--mlb", argv[i])) {
+                mlbfilepath = argv[i + 1];
                 i += 1;
             }
         } else if (romfilepath == 0) {
@@ -154,6 +259,11 @@ int main(int argc, char **argv) {
         return -2;
     }
 
+    if (mlbfilepath != 0) {
+        if (parseMLBFile(mlbfilepath) != 0) {
+            return showHelp(0);
+        }
+    }
 
     int cdlfile = open(cdlfilepath, O_RDONLY | O_BINARY);
     if (cdlfile == 0) {
