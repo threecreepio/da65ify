@@ -54,8 +54,9 @@ int reportCDL(FILE *out, int start, int end, int cdl) {
 }
 
 struct label {
-    uint8_t type;
-    uint32_t addr;
+    unsigned char type;
+    int addr;
+    int size;
     char *label;
 };
 
@@ -83,11 +84,22 @@ int parseMLBFile(char *path) {
         if (labelcount == 0 && ((uint8_t)rest[0]) == 0xEF && ((uint8_t)rest[1]) == 0xBB && ((uint8_t)rest[2]) == 0xBF) {
             rest += 3;
         }
-        
+
         char *type = strsep(&rest, ":"); // read label type
         char *addr = strsep(&rest, ":"); // read label rom offset
         char *label = strsep(&rest, ":"); // read label name
         strsep(&rest, ":"); // read comment
+
+        int addrl = (int)strtol(addr, NULL, 16);
+        int size = 1;
+
+        if (addr != 0) {
+            char *addrend = addr;
+            strsep(&addrend, "-");
+            if (addrend != 0) {
+                size = (int)strtol(addrend, NULL, 16) - addrl;
+            }
+        }
 
         // skip ahead this line had no label
         int labellen = strnlen(label, linelen);
@@ -114,7 +126,8 @@ int parseMLBFile(char *path) {
         strncpy(labelstr, label, labellen + 1);
         labels[labelcount].type = type[0];
         labels[labelcount].label = labelstr;
-        labels[labelcount].addr = (int)strtol(addr, NULL, 16);
+        labels[labelcount].addr = addrl;
+        labels[labelcount].size = size;
         labelcount += 1;
     }
 
@@ -176,7 +189,7 @@ GLOBAL { \
         for (size_t i=0; i < labelcount; ++i) {
             // always write ram labels
             if (labels[i].type == 'R') {
-                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; };", labels[i].addr, labels[i].label);
+                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; SIZE $%X; };", labels[i].addr, labels[i].label, labels[i].size);
                 continue;
             }
 
@@ -186,7 +199,7 @@ GLOBAL { \
                 if (labels[i].addr < start) continue;
                 if (labels[i].addr >= end) continue;
                 // and if so, print it.
-                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; };", startaddr + (labels[i].addr - start), labels[i].label);
+                fprintf(out, "\nLABEL { ADDR $%04X; NAME \"%s\"; SIZE $%X; };", startaddr + (labels[i].addr - start), labels[i].label, labels[i].size);
                 continue;
             }
         }
