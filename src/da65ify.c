@@ -69,7 +69,8 @@ int writeBankInfo(const char *romfilepath, FILE *romfile, FILE *cdlfile, int ban
         if (cdl & 0b1100 && foundstartaddr == 0) {
             foundstartaddr = 1;
             int newbank = (cdl >> 2) & 0b11;
-            startaddr = 0x8000 + ((newbank - 1) * 0x2000);
+            // location in memory from cdl file, rounded down to the bank size
+            startaddr = (0x8000 + (newbank * 0x2000)) / (banksize * 0x1000) * (banksize * 0x1000);
         }
     }
 
