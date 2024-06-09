@@ -1,4 +1,4 @@
-CC=gcc
+CC=${HOST}gcc
 CFLAGS := -Wall -O2
 
 da65ify: da65ify.o
